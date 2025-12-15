@@ -1,4 +1,4 @@
-(The file `/Users/yashrajput/Desktop/Interactive Bézier Curve Simulation/README.md` exists, but is empty)
+
 # Interactive Bézier Curve Simulation
 
 A lightweight interactive Bézier curve simulator implemented as a React component. It visualizes a cubic Bézier curve whose control points are driven by simple spring physics, with optional mouse or device-gyroscope control. This repository contains the original React component (`beizure.js`) and a small quick-start `index.html` for local testing.

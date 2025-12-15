@@ -7,6 +7,7 @@ Key goals:
 - Demonstrate cubic Bézier evaluation and tangent vectors (derivatives).
 - Provide an interactive, physics-driven control point system (spring + damping).
 - Offer both mouse and gyroscope (mobile) input modes.
+Deployed link:https://interactive-be-zier-curve-simulatio.vercel.app/
 
 ---
 

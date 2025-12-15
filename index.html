@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Interactive Bézier Curve Simulation</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #0f172a; color: #fff; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+      /* Make the canvas fill remaining space (approximate the component layout) */
+      canvas { width: 100%; height: calc(100vh - 160px); display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- React, ReactDOM and Babel for in-browser JSX transpilation (development only) -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- App (transpiled by babel-standalone) -->
+    <script type="text/babel">
+      const { useRef, useEffect, useState } = React;
+
+      const BezierPhysicsSimulation = () => {
+        const canvasRef = useRef(null);
+        const [mode, setMode] = useState('mouse'); // 'mouse' or 'gyro'
+        const [showTangents, setShowTangents] = useState(true);
+        const [showControls, setShowControls] = useState(true);
+        const [gyroSupported, setGyroSupported] = useState(false);
+        const [gyroPermission, setGyroPermission] = useState('unknown');
+        const [fps, setFps] = useState(60);
+
+        useEffect(() => {
+          const canvas = canvasRef.current;
+          const ctx = canvas.getContext('2d');
+          let animationId;
+
+          // Set canvas size
+          const resize = () => {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+          };
+          resize();
+          window.addEventListener('resize', resize);
+
+          class Vector2 {
+            constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+            add(v) { return new Vector2(this.x + v.x, this.y + v.y); }
+            subtract(v) { return new Vector2(this.x - v.x, this.y - v.y); }
+            multiply(scalar) { return new Vector2(this.x * scalar, this.y * scalar); }
+            length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+            normalize() { const len = this.length(); if (len === 0) return new Vector2(0,0); return new Vector2(this.x/len, this.y/len); }
+          }
+
+          const bezierPoint = (t, p0, p1, p2, p3) => {
+            const t1 = 1 - t;
+            const t1_2 = t1 * t1;
+            const t1_3 = t1_2 * t1;
+            const t_2 = t * t;
+            const t_3 = t_2 * t;
+            const x = t1_3 * p0.x + 3 * t1_2 * t * p1.x + 3 * t1 * t_2 * p2.x + t_3 * p3.x;
+            const y = t1_3 * p0.y + 3 * t1_2 * t * p1.y + 3 * t1 * t_2 * p2.y + t_3 * p3.y;
+            return new Vector2(x, y);
+          };
+
+          const bezierTangent = (t, p0, p1, p2, p3) => {
+            const t1 = 1 - t;
+            const t1_2 = t1 * t1;
+            const t_2 = t * t;
+            const dx = 3 * t1_2 * (p1.x - p0.x) + 6 * t1 * t * (p2.x - p1.x) + 3 * t_2 * (p3.x - p2.x);
+            const dy = 3 * t1_2 * (p1.y - p0.y) + 6 * t1 * t * (p2.y - p1.y) + 3 * t_2 * (p3.y - p2.y);
+            return new Vector2(dx, dy);
+          };
+
+          class SpringPoint {
+            constructor(x, y, fixed = false) {
+              this.position = new Vector2(x, y);
+              this.velocity = new Vector2(0, 0);
+              this.target = new Vector2(x, y);
+              this.fixed = fixed;
+              this.springConstant = 0.15;
+              this.damping = 0.85;
+            }
+            update(deltaTime = 1) {
+              if (this.fixed) return;
+              const displacement = this.position.subtract(this.target);
+              const springForce = displacement.multiply(-this.springConstant);
+              const dampingForce = this.velocity.multiply(-this.damping);
+              const acceleration = springForce.add(dampingForce);
+              this.velocity = this.velocity.add(acceleration.multiply(deltaTime));
+              this.position = this.position.add(this.velocity.multiply(deltaTime));
+            }
+            setTarget(x, y) { this.target = new Vector2(x, y); }
+          }
+
+          const cw = canvas.width;
+          const ch = canvas.height;
+          const points = [
+            new SpringPoint(cw * 0.2, ch * 0.5, true),
+            new SpringPoint(cw * 0.4, ch * 0.3, false),
+            new SpringPoint(cw * 0.6, ch * 0.7, false),
+            new SpringPoint(cw * 0.8, ch * 0.5, true)
+          ];
+
+          let mousePos = new Vector2(cw / 2, ch / 2);
+          let gyroData = { beta:0, gamma:0, alpha:0 };
+          let gyroActive = false;
+
+          const handleMouseMove = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mousePos.x = e.clientX - rect.left;
+            mousePos.y = e.clientY - rect.top;
+          };
+          canvas.addEventListener('mousemove', handleMouseMove);
+
+          const handleOrientation = (e) => {
+            gyroData.beta = e.beta || 0;
+            gyroData.gamma = e.gamma || 0;
+            gyroData.alpha = e.alpha || 0;
+            gyroActive = true;
+          };
+
+          if (window.DeviceOrientationEvent) {
+            setGyroSupported(true);
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+              setGyroPermission('needed');
+            } else {
+              window.addEventListener('deviceorientation', handleOrientation);
+            }
+          }
+
+          const drawCurve = () => {
+            const path = new Path2D();
+            const steps = 100;
+            for (let i=0;i<=steps;i++){
+              const t = i/steps;
+              const point = bezierPoint(t, points[0].position, points[1].position, points[2].position, points[3].position);
+              if (i===0) path.moveTo(point.x, point.y); else path.lineTo(point.x, point.y);
+            }
+            ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 3; ctx.shadowColor = 'rgba(59,130,246,0.5)'; ctx.shadowBlur = 10; ctx.stroke(path); ctx.shadowBlur = 0;
+          };
+
+          const drawTangents = () => {
+            const tangentCount = 12; const tangentLength = 40;
+            for (let i=0;i<=tangentCount;i++){
+              const t = i/tangentCount;
+              const point = bezierPoint(t, points[0].position, points[1].position, points[2].position, points[3].position);
+              const tangent = bezierTangent(t, points[0].position, points[1].position, points[2].position, points[3].position);
+              const normalized = tangent.normalize();
+              const start = point.subtract(normalized.multiply(tangentLength/2));
+              const end = point.add(normalized.multiply(tangentLength/2));
+              ctx.beginPath(); ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2; ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y); ctx.stroke();
+              const arrowSize = 8; const angle = Math.atan2(normalized.y, normalized.x);
+              ctx.beginPath(); ctx.fillStyle = '#ef4444'; ctx.moveTo(end.x, end.y);
+              ctx.lineTo(end.x - arrowSize * Math.cos(angle - Math.PI/6), end.y - arrowSize * Math.sin(angle - Math.PI/6));
+              ctx.lineTo(end.x - arrowSize * Math.cos(angle + Math.PI/6), end.y - arrowSize * Math.sin(angle + Math.PI/6)); ctx.closePath(); ctx.fill();
+            }
+          };
+
+          const drawControlPoints = () => {
+            points.forEach((point, i)=>{
+              if (i===1){ ctx.beginPath(); ctx.strokeStyle='rgba(156,163,175,0.5)'; ctx.lineWidth=1; ctx.setLineDash([5,5]); ctx.moveTo(points[0].position.x, points[0].position.y); ctx.lineTo(point.position.x, point.position.y); ctx.stroke(); ctx.setLineDash([]); }
+              if (i===2){ ctx.beginPath(); ctx.strokeStyle='rgba(156,163,175,0.5)'; ctx.lineWidth=1; ctx.setLineDash([5,5]); ctx.moveTo(points[3].position.x, points[3].position.y); ctx.lineTo(point.position.x, point.position.y); ctx.stroke(); ctx.setLineDash([]); }
+              ctx.beginPath(); ctx.fillStyle = point.fixed ? '#10b981' : '#f59e0b'; ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 2; ctx.arc(point.position.x, point.position.y, point.fixed ? 8 : 10, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+            });
+          };
+
+          let lastTime = performance.now(); let frameCount = 0; let fpsTime = performance.now();
+
+          const updatePhysics = () => {
+            const currentTime = performance.now();
+            const deltaTime = Math.min((currentTime - lastTime) / 16.67, 2);
+            lastTime = currentTime;
+            frameCount++; if (currentTime - fpsTime >= 1000) { setFps(frameCount); frameCount = 0; fpsTime = currentTime; }
+
+            if (mode === 'mouse') {
+              const centerX = canvas.width / 2; const centerY = canvas.height / 2;
+              const offsetX = (mousePos.x - centerX) * 0.3; const offsetY = (mousePos.y - centerY) * 0.3;
+              points[1].setTarget(canvas.width * 0.4 + offsetX, canvas.height * 0.3 + offsetY);
+              points[2].setTarget(canvas.width * 0.6 - offsetX, canvas.height * 0.7 - offsetY);
+            } else if (mode === 'gyro' && gyroActive) {
+              const offsetX = (gyroData.gamma / 90) * 150; const offsetY = ((gyroData.beta - 90) / 90) * 150;
+              points[1].setTarget(canvas.width * 0.4 + offsetX, canvas.height * 0.3 + offsetY);
+              points[2].setTarget(canvas.width * 0.6 - offsetX, canvas.height * 0.7 - offsetY);
+            }
+
+            points.forEach(point => point.update(deltaTime));
+          };
+
+          const render = () => {
+            ctx.fillStyle = '#0f172a'; ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.strokeStyle = 'rgba(51,65,85,0.3)'; ctx.lineWidth = 1; const gridSpacing = 50;
+            for (let x=0;x<canvas.width;x+=gridSpacing){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+            for (let y=0;y<canvas.height;y+=gridSpacing){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+            drawCurve(); if (showTangents) drawTangents(); if (showControls) drawControlPoints();
+          };
+
+          const animate = () => { updatePhysics(); render(); animationId = requestAnimationFrame(animate); };
+          animate();
+
+          return () => {
+            window.removeEventListener('resize', resize);
+            canvas.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('deviceorientation', handleOrientation);
+            cancelAnimationFrame(animationId);
+          };
+        }, [mode, showTangents, showControls]);
+
+        const requestGyroPermission = async () => {
+          if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            try {
+              const permission = await DeviceOrientationEvent.requestPermission();
+              if (permission === 'granted') { window.addEventListener('deviceorientation', (e)=>{}); setGyroPermission('granted'); setMode('gyro'); } else { setGyroPermission('denied'); }
+            } catch (error) { console.error('Error requesting gyroscope permission:', error); setGyroPermission('denied'); }
+          }
+        };
+
+        return (
+          <div style={{display:'flex', flexDirection:'column', height:'100vh'}}>
+            <div style={{padding:12, background:'#0b1220', color:'#fff'}}>
+              <h1 style={{margin:0,fontSize:20}}>Interactive Bézier Curve Simulation</h1>
+              <div style={{marginTop:8}}>
+                <button onClick={()=>setMode('mouse')} style={{marginRight:6}}>Mouse Mode</button>
+                {gyroSupported && (
+                  gyroPermission === 'needed' ? (
+                    <button onClick={requestGyroPermission}>Enable Gyro</button>
+                  ) : gyroPermission === 'granted' ? (
+                    <button onClick={()=>setMode('gyro')}>Gyro Mode</button>
+                  ) : null
+                )}
+                <button onClick={()=>setShowTangents(!showTangents)} style={{marginLeft:8}}>Tangents {showTangents ? 'ON' : 'OFF'}</button>
+                <button onClick={()=>setShowControls(!showControls)} style={{marginLeft:8}}>Controls {showControls ? 'ON' : 'OFF'}</button>
+              </div>
+            </div>
+
+            <canvas ref={canvasRef}></canvas>
+
+            <div style={{padding:8, background:'#0b1220', color:'#9ca3af'}}>
+              <span style={{marginRight:12}}>Blue curve: Cubic Bézier with spring physics</span>
+              <span style={{marginRight:12}}>Red arrows: tangents</span>
+              <span style={{marginRight:12}}>Green dots: fixed endpoints</span>
+              <span style={{marginRight:12}}>Orange dots: dynamic control points</span>
+              <span style={{float:'right', fontFamily:'monospace', fontWeight:'700'}}>{fps} FPS</span>
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<BezierPhysicsSimulation />);
+    </script>
+  </body>
+</html>
